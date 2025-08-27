@@ -1,7 +1,16 @@
 #!/bin/bash
 # LXC-safe unified Ollama NFS setup script
 # Usage: ./setup_ollama_lxc_safe.sh [--dry-run] [--stage2]
-
+#
+#nano setup_ollama_lxc_safe.sh
+#chmod +x setup_ollama_lxc_safe.sh
+## Dry-run first to verify actions
+#./setup_ollama_lxc_safe.sh --dry-run --stage2
+#
+## Then wet run
+#./setup_ollama_lxc_safe.sh --stage2
+#
+#
 OLLAMA_UID=999
 OLLAMA_GID=996
 MOUNT_POINT="/mnt/ollama_models"
