@@ -1,17 +1,15 @@
-## Deployment script to link Truenas Dataset to linux host
-## Stage 1 only (user/group + NFS mount)
-#sudo ./setup_ollama_nfs.sh
-#
-## Stage 1 + Stage 2 (symlink models)
-#sudo ./setup_ollama_nfs.sh --stage2
-#
-## Dry run (print actions without changing anything)
-#sudo ./setup_ollama_nfs.sh --dry-run --stage2
-#
 #!/bin/bash
 # Unified Ollama NFS setup script for VMs and LXC containers
 # Usage: ./setup_ollama_unified.sh [--dry-run] [--stage2]
-
+## Stage 1 only
+#sudo ./setup_ollama_unified.sh
+#
+## Stage 1 + Stage 2 symlinks
+#sudo ./setup_ollama_unified.sh --stage2
+#
+## Dry-run (simulate actions)
+#sudo ./setup_ollama_unified.sh --dry-run --stage2
+#
 OLLAMA_UID=999
 OLLAMA_GID=996
 MOUNT_POINT="/mnt/ollama_models"
