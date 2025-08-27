@@ -174,3 +174,10 @@ if $STAGE2; then
     done
 fi
 echo "====================="
+echo "====================="
+ollama list
+echo "====================="
+ls -la /mnt/ollama_models/models
+echo "====================="
+echo "====================="
+
