@@ -9,23 +9,20 @@
 #sudo ./setup_ollama_nfs.sh --dry-run --stage2
 #
 #!/bin/bash
-# Setup NFS mount for ollama models with UID/GID handling and symlinked models
-# Supports --dry-run and --stage2
+# LXC-safe Ollama NFS setup and model symlink script
+# Usage: 
+#   ./setup_ollama_lxc.sh [--dry-run] [--stage2]
 
-NFS_SERVER="truenas"
-NFS_PATH="/mnt/twelves/ollama_models"
-MOUNT_POINT="/mnt/ollama_models"
 OLLAMA_UID=999
 OLLAMA_GID=996
-FALLBACK_UID=2000
-
+MOUNT_POINT="/mnt/ollama_models"
 DRYRUN=false
 STAGE2=false
 
 for arg in "$@"; do
     case "$arg" in
         --dry-run) DRYRUN=true ;;
-        --stage2)  STAGE2=true ;;
+        --stage2) STAGE2=true ;;
     esac
 done
 
@@ -37,58 +34,57 @@ run_cmd() {
     fi
 }
 
-echo "=== Stage 1: User/Group and NFS mount setup ==="
+echo "=== Stage 1: User/Group setup ==="
 
-# Ensure mount point exists
-if [ ! -d "$MOUNT_POINT" ]; then
-    run_cmd "mkdir -p $MOUNT_POINT"
+# Detect if running inside LXC
+if [ -f /proc/1/environ ] && grep -q container=lxc /proc/1/environ; then
+    echo "ℹ️ Running inside LXC container"
+    IN_LXC=true
+else
+    IN_LXC=false
 fi
 
 # --- Group handling ---
 EXISTING_GROUP=$(getent group "$OLLAMA_GID" | cut -d: -f1)
 if [ -n "$EXISTING_GROUP" ]; then
-    echo "⚠️ GID $OLLAMA_GID already used by group '$EXISTING_GROUP'."
-    if getent group ollama >/dev/null; then
-        echo "⚠️ Group 'ollama' exists. Adding 'ollama' user to existing group '$EXISTING_GROUP'."
-    else
-        run_cmd "groupadd -g $OLLAMA_GID ollama" || true
-    fi
+    echo "⚠️ GID $OLLAMA_GID already used by group '$EXISTING_GROUP'. Adding 'ollama' user to this group."
     GID_FOR_USER="$OLLAMA_GID"
 else
-    if getent group ollama >/dev/null; then
-        echo "⚠️ Group 'ollama' exists with a different GID. Will use existing."
-        GID_FOR_USER=$(getent group ollama | cut -d: -f3)
-    else
+    if ! getent group ollama >/dev/null; then
         run_cmd "groupadd -g $OLLAMA_GID ollama"
-        GID_FOR_USER="$OLLAMA_GID"
     fi
+    GID_FOR_USER="$OLLAMA_GID"
 fi
 
 # --- User handling ---
 if id ollama >/dev/null 2>&1; then
     echo "User 'ollama' exists. Ensuring membership in group with GID $GID_FOR_USER"
-    USER_GROUPS=$(id -Gn ollama)
     TARGET_GROUP=$(getent group "$GID_FOR_USER" | cut -d: -f1)
-    if ! echo "$USER_GROUPS" | grep -qw "$TARGET_GROUP"; then
+    if ! id -Gn ollama | grep -qw "$TARGET_GROUP"; then
         run_cmd "usermod -aG $TARGET_GROUP ollama"
     fi
 else
     run_cmd "useradd -u $OLLAMA_UID -g $GID_FOR_USER -m -s /bin/bash ollama"
 fi
 
-# --- NFS fstab entry ---
-if ! grep -q "$MOUNT_POINT" /etc/fstab; then
-    echo "Adding NFS mount entry to /etc/fstab..."
-    FSTAB_LINE="$NFS_SERVER:$NFS_PATH  $MOUNT_POINT  nfs  defaults,nofail,x-systemd.automount,_netdev,rsize=131072,wsize=131072,timeo=14,retrans=3  0  0"
-    run_cmd "echo '$FSTAB_LINE' >> /etc/fstab"
+# --- NFS mount warning for LXC ---
+if $IN_LXC; then
+    echo "ℹ️ In LXC container, NFS should be mounted by the host or bind-mounted."
+    echo "ℹ️ Make sure $MOUNT_POINT exists inside container and points to host-mounted NFS."
+    [ ! -d "$MOUNT_POINT" ] && run_cmd "mkdir -p $MOUNT_POINT"
 else
-    echo "fstab entry for $MOUNT_POINT already exists."
+    echo "ℹ️ Running on host: NFS mount commands can be executed"
+    [ ! -d "$MOUNT_POINT" ] && run_cmd "mkdir -p $MOUNT_POINT"
+    if ! grep -q "$MOUNT_POINT" /etc/fstab; then
+        echo "Adding NFS mount entry to /etc/fstab"
+        FSTAB_LINE="truenas:/mnt/twelves/ollama_models $MOUNT_POINT nfs defaults,nofail,x-systemd.automount,_netdev,rsize=131072,wsize=131072,timeo=14,retrans=3 0 0"
+        run_cmd "echo '$FSTAB_LINE' >> /etc/fstab"
+        run_cmd "systemctl daemon-reload"
+        run_cmd "systemctl restart remote-fs.target"
+    fi
 fi
 
-run_cmd "systemctl daemon-reload"
-run_cmd "systemctl restart remote-fs.target"
-
-echo "✅ Stage 1 complete. Check with: mount | grep $MOUNT_POINT"
+echo "✅ Stage 1 complete."
 
 # -------------------
 # Stage 2: Symlink ollama models
@@ -102,35 +98,41 @@ if $STAGE2; then
         "/root/.ollama/models"
     )
 
+    # Stop ollama service if systemctl exists
+    if command -v systemctl >/dev/null 2>&1; then
+        run_cmd "systemctl stop ollama"
+    else
+        echo "ℹ️ systemctl not found, please stop ollama manually if needed"
+    fi
+
     for DIR in "${MODEL_DIRS[@]}"; do
         PARENT=$(dirname "$DIR")
-        if [ -d "$PARENT" ]; then
-            echo "Processing $DIR ..."
+        [ ! -d "$PARENT" ] && run_cmd "mkdir -p $PARENT"
 
-            # Already a symlink?
-            if [ -L "$DIR" ]; then
-                echo "ℹ️  $DIR is already a symlink, skipping."
-                continue
-            fi
-
-            # Exists as a directory?
-            if [ -d "$DIR" ]; then
-                if [ "$(ls -A "$DIR")" ]; then
-                    echo "⚠️  $DIR is not empty."
-                    read -p "Delete contents and replace with symlink? (y/N): " ans
-                    [[ "$ans" != "y" ]] && continue
-                fi
-                run_cmd "systemctl stop ollama"
-                run_cmd "rm -rf $DIR"
-            fi
-
-            # Create symlink
-            run_cmd "ln -s $MOUNT_POINT/models $DIR"
-
-            run_cmd "systemctl start ollama"
-            run_cmd "ollama status || true"
+        if [ -L "$DIR" ]; then
+            echo "ℹ️ $DIR is already a symlink, skipping."
+            continue
         fi
+
+        if [ -d "$DIR" ] && [ "$(ls -A "$DIR")" ]; then
+            echo "⚠️ $DIR is not empty."
+            read -p "Delete contents and replace with symlink? (y/N): " ans
+            [[ "$ans" != "y" ]] && continue
+            run_cmd "rm -rf $DIR"
+        elif [ -d "$DIR" ]; then
+            run_cmd "rm -rf $DIR"
+        fi
+
+        run_cmd "ln -s $MOUNT_POINT/models $DIR"
     done
+
+    # Start ollama service if systemctl exists
+    if command -v systemctl >/dev/null 2>&1; then
+        run_cmd "systemctl start ollama"
+        run_cmd "ollama status || true"
+    else
+        echo "ℹ️ systemctl not found, please start ollama manually"
+    fi
 
     echo "✅ Stage 2 complete. Models directories are now symlinked to $MOUNT_POINT/models"
 fi
