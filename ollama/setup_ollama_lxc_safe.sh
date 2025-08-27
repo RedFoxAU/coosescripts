@@ -10,7 +10,6 @@
 ## Then wet run
 #./setup_ollama_lxc_safe.sh --stage2
 #
-#
 OLLAMA_UID=999
 OLLAMA_GID=996
 MOUNT_POINT="/mnt/ollama_models"
@@ -126,6 +125,12 @@ if $STAGE2; then
     fi
 
     for DIR in "${MODEL_DIRS[@]}"; do
+        # Skip /root if inaccessible
+        if [ ! -e "$(dirname "$DIR")" ] || ! [ -w "$(dirname "$DIR")" ]; then
+            echo "⚠️ Cannot access parent of $DIR. Skipping."
+            continue
+        fi
+
         PARENT=$(dirname "$DIR")
         [ ! -d "$PARENT" ] && run_cmd "mkdir -p $PARENT"
 
@@ -183,8 +188,7 @@ if $STAGE2; then
     done
 fi
 echo "====================="
-echo "====================="
-ollama list
-echo "====================="
+ollama list || true
 ls -la /mnt/ollama_models/models
 echo "====================="
+
